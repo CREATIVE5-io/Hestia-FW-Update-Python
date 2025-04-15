@@ -1,0 +1,152 @@
+
+import argparse
+import logging
+import os
+import subprocess
+from time import sleep
+
+import modbus_tk
+import modbus_tk.defines as cst
+import modbus_tk.modbus_rtu as modbus_rtu
+import serial
+import pymdfu
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="NTN-MODBUS-MASTER-MCU-FW-UPDATE")
+    parser.add_argument("--image", type=str, help="firmware image file path", default='')
+    parser.add_argument("--port", type=str, help="device port, default is /dev/ttyUSB0", default='/dev/ttyUSB0')
+    parser.add_argument("--dev_id", type=int, help="device Modbus ID, default is 1", default=1)
+    parser.add_argument("--retry", action='store_true', help="Use for MCU already in bootloader Mode", default=False)
+    return parser.parse_args()
+
+def get_logger():
+    return modbus_tk.utils.create_logger('console')
+
+def log_args(args, logger):
+    logger.info(f'Image Path: {args.image}')
+    logger.info(f'Port: {args.port}')
+    logger.info(f'Device Modbus ID: {args.dev_id}')
+    logger.info(f'Retry: {args.retry}')
+
+class NTNModbusMaster:
+    def __init__(self, slave_address, port, baudrate=115200, bytesize=8, parity='N', stopbits=1, xonxoff=0, logger=None):
+        self.logger = logger or logging.getLogger(__name__)
+        try:
+            self.master = modbus_rtu.RtuMaster(
+                serial.Serial(
+                    port=port,
+                    baudrate=baudrate,
+                    bytesize=bytesize,
+                    parity=parity,
+                    stopbits=stopbits,
+                    xonxoff=xonxoff
+                )
+            )
+            self.master.set_timeout(1)
+            self.master.set_verbose(False)
+            self.slave_addr = slave_address
+            self.logger.info('NTN dongle init!')
+        except modbus_tk.modbus.ModbusError as e:
+            self.logger.error(f'{e} - Code={e.get_exception_code()}')
+            raise
+
+    def read_register(self, reg, functioncode=cst.READ_INPUT_REGISTERS):
+        try:
+            value = self.master.execute(self.slave_addr, functioncode, reg, 1)
+            return value[0] if value[0] != 0 else None
+        except Exception as e:
+            self.logger.info(e)
+            return None
+
+    def read_registers(self, reg, num, functioncode=cst.READ_INPUT_REGISTERS):
+        try:
+            values = self.master.execute(self.slave_addr, functioncode, reg, num)
+            return values if not all(x == 0 for x in values) else None
+        except Exception as e:
+            self.logger.info(e)
+            return None
+
+    def set_registers(self, reg, val):
+        try:
+            if val is not None:
+                self.master.execute(self.slave_addr, cst.WRITE_MULTIPLE_REGISTERS, reg, output_value=val)
+                return True
+            return False
+        except Exception as e:
+            self.logger.info(e)
+            return False
+
+    def set_register(self, reg, val):
+        try:
+            if val is not None:
+                self.master.execute(self.slave_addr, cst.WRITE_SINGLE_REGISTER, reg, output_value=val)
+                return True
+            return False
+        except Exception as e:
+            self.logger.info(e)
+            return False
+
+def run_firmware_update(args, logger):
+    if not args.image:
+        raise ValueError('Missing firmware image file path')
+
+    ntn_dongle = NTNModbusMaster(
+        slave_address=args.dev_id,
+        port=args.port,
+        baudrate=115200,
+        logger=logger
+    )
+
+    valid_passwd = True
+    if not args.retry:
+        valid_passwd = ntn_dongle.set_registers(0x0000, (0, 0, 0, 0))
+    logger.info(f'Password valid: {valid_passwd}')
+
+    if not valid_passwd:
+        raise RuntimeError('Failed to set password or password invalid.')
+
+    if not args.retry:
+        # Enable Engineering mode
+        ntn_dongle.set_register(0xFFD0, 0xAA55)
+        # Enable Bootloader Mode
+        ntn_dongle.set_register(0xD000, 0xAA55)
+        # Reset MCU
+        ntn_dongle.set_register(0xFD00, 0xAA55)
+        sleep(1)
+
+    command = [
+        "pymdfu", "update",
+        "--tool", "serial",
+        "--port", args.port,
+        "--baudrate", '115200',
+        "--image", args.image,
+        "-v", "debug"
+    ]
+
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        universal_newlines=True
+    )
+
+    for line in process.stdout:
+        logger.info(line.rstrip())
+
+    return_code = process.wait()
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, command)
+
+def main():
+    args = parse_arguments()
+    logger = get_logger()
+    log_args(args, logger)
+    try:
+        run_firmware_update(args, logger)
+    except Exception as e:
+        logger.error(f'Firmware update failed: {e}')
+        raise
+
+if __name__ == '__main__':
+    main()

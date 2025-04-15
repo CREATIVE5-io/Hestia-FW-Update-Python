@@ -1,0 +1,11 @@
+appdirs==1.4.4
+easymcp2221==1.8.2
+future==1.0.0
+hidapi==0.14.0.post4
+mcp2210-python==1.0.8
+modbus-tk==1.1.5
+packaging==25.0
+pyaardvark==0.8.1
+pymdfu==2.5.1.9
+pyserial==3.5
+tomli==2.2.1
