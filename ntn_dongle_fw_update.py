@@ -125,26 +125,34 @@ class NTNModbusMaster:
             self.logger.info(e)
             return False
 
+    def close(self):
+        """Close the Modbus connection and release the serial port."""
+        try:
+            if hasattr(self, 'master') and self.master:
+                self.master.close()
+                self.logger.info('NTN dongle connection closed!')
+        except Exception as e:
+            self.logger.error(f'Error closing connection: {e}')
+
 def run_firmware_update(args, logger):
     if not args.image:
         raise ValueError('Missing firmware image file path')
 
-    ntn_dongle = NTNModbusMaster(
-        slave_address=args.dev_id,
-        port=args.port,
-        baudrate=115200,
-        logger=logger
-    )
-
-    valid_passwd = True
+    # Only establish Modbus connection if not in retry mode
     if not args.retry:
+        ntn_dongle = NTNModbusMaster(
+            slave_address=args.dev_id,
+            port=args.port,
+            baudrate=115200,
+            logger=logger
+        )
+
         valid_passwd = ntn_dongle.set_registers(0x0000, (0, 0, 0, 0))
-    logger.info(f'Password valid: {valid_passwd}')
+        logger.info(f'Password valid: {valid_passwd}')
 
-    if not valid_passwd:
-        raise RuntimeError('Failed to set password or password invalid.')
+        if not valid_passwd:
+            raise RuntimeError('Failed to set password or password invalid.')
 
-    if not args.retry:
         # Enable Engineering mode
         ntn_dongle.set_register(0xFFD0, 0xAA55)
         # Enable Bootloader Mode
@@ -153,6 +161,14 @@ def run_firmware_update(args, logger):
         ntn_dongle.set_register(0xFD00, 0xAA55)
         sleep(1)
 
+        # Close the Modbus connection to release the serial port
+        ntn_dongle.close()
+        sleep(0.5)  # Give some time for the port to be released
+    else:
+        logger.info('Retry mode: Skipping Modbus configuration, device should already be in bootloader mode')
+        # In retry mode, just wait a bit to ensure any previous connections are closed
+        sleep(0.5)
+    
     # Find the correct pymdfu executable
     pymdfu_cmd = find_pymdfu_executable()
     logger.info(f'Using pymdfu command: {pymdfu_cmd}')
