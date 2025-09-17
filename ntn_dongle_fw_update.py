@@ -3,6 +3,8 @@ import argparse
 import logging
 import os
 import subprocess
+import sys
+import shutil
 from time import sleep
 
 import modbus_tk
@@ -21,6 +23,43 @@ def parse_arguments():
 
 def get_logger():
     return modbus_tk.utils.create_logger('console')
+
+def find_pymdfu_executable():
+    """Find the pymdfu executable, handling Windows path issues."""
+    # First try to find pymdfu in PATH
+    pymdfu_path = shutil.which('pymdfu')
+    if pymdfu_path:
+        return pymdfu_path
+
+    # On Windows, try with .exe extension
+    if sys.platform == 'win32':
+        pymdfu_path = shutil.which('pymdfu.exe')
+        if pymdfu_path:
+            return pymdfu_path
+
+    # Try to find it in Python Scripts directory
+    if sys.platform == 'win32':
+        python_scripts = os.path.join(os.path.dirname(sys.executable), 'Scripts')
+        pymdfu_exe = os.path.join(python_scripts, 'pymdfu.exe')
+        if os.path.exists(pymdfu_exe):
+            return pymdfu_exe
+
+        pymdfu_script = os.path.join(python_scripts, 'pymdfu')
+        if os.path.exists(pymdfu_script):
+            return pymdfu_script
+
+    # Try using python -m pymdfu as fallback
+    try:
+        # Test if pymdfu module can be imported and run
+        result = subprocess.run([sys.executable, '-m', 'pymdfu', '--help'],
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            return [sys.executable, '-m', 'pymdfu']
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    # If all else fails, return 'pymdfu' and let subprocess handle the error
+    return 'pymdfu'
 
 def log_args(args, logger):
     logger.info(f'Image Path: {args.image}')
@@ -114,14 +153,29 @@ def run_firmware_update(args, logger):
         ntn_dongle.set_register(0xFD00, 0xAA55)
         sleep(1)
 
-    command = [
-        "pymdfu", "update",
-        "--tool", "serial",
-        "--port", args.port,
-        "--baudrate", '115200',
-        "--image", args.image,
-        "-v", "debug"
-    ]
+    # Find the correct pymdfu executable
+    pymdfu_cmd = find_pymdfu_executable()
+    logger.info(f'Using pymdfu command: {pymdfu_cmd}')
+
+    # Build command list - handle both string and list cases
+    if isinstance(pymdfu_cmd, list):
+        command = pymdfu_cmd + [
+            "update",
+            "--tool", "serial",
+            "--port", args.port,
+            "--baudrate", '115200',
+            "--image", args.image,
+            "-v", "debug"
+        ]
+    else:
+        command = [
+            pymdfu_cmd, "update",
+            "--tool", "serial",
+            "--port", args.port,
+            "--baudrate", '115200',
+            "--image", args.image,
+            "-v", "debug"
+        ]
 
     process = subprocess.Popen(
         command,
